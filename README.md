@@ -1,6 +1,6 @@
 # Site vitrine — publicités vidéo IA
 
-Site d'une page pour vendre des spots vidéo générés par IA aux commerces de Troyes et de l'Aube, avec la série TikTok AlexyaAI comme vitrine.
+Site d'une page pour vendre des spots vidéo générés par IA aux entreprises de tous les pays francophones, avec la série TikTok AlexyaAI comme vitrine.
 
 Style : inspiré de Stripe (fond blanc, encre bleu nuit, un seul indigo `#533afd` pour les actions, police fine, rayons de 4 px, aucune ombre). Aucune dépendance, aucun outil de build : trois fichiers.
 
@@ -37,6 +37,7 @@ Les engagements affichés sont des promesses que vous devrez tenir : livraison e
 
 - **Mentions légales** : obligatoires sur tout site professionnel (loi LCEN). Il faut votre nom, votre statut, votre SIRET, une adresse de contact et le nom de l'hébergeur (Netlify si vous suivez la procédure ci-dessus). Ajoutez une section ou une page dédiée et un lien dans le pied de page.
 - **TVA** : si vous êtes micro-entrepreneur en franchise de TVA, remplacez « HT » par la mention « TVA non applicable, art. 293 B du CGI ».
+- **Clients hors de France** : les mentions de TVA sur vos factures changent selon que le client est dans l'Union européenne (Belgique, Luxembourg) ou en dehors (Suisse, Québec, Afrique). À vérifier auprès de l'URSSAF ou d'un comptable avant le premier client étranger. Les prix du site sont affichés en euros.
 
 ## Recevoir les demandes du formulaire
 
@@ -47,20 +48,25 @@ Par défaut, le formulaire n'envoie rien : il prépare le message du visiteur et
 
 Pour vérifier : envoyez une demande de test depuis le site en ligne. Le message « Demande envoyée » ne s'affiche que si le service a bien reçu la demande.
 
+## Réservation d'appel
+
+Le calendrier de la section Contact est une illustration animée : rien n'y est cliquable. Pour que les visiteurs réservent vraiment un créneau, créez un lien de prise de rendez-vous gratuit (Calendly ou Cal.com) et ajoutez un bouton qui y mène sous le calendrier.
+
 ## Animations
 
 | Effet | Où |
 |---|---|
-| Grille de points qui réagit au curseur et aux clics | Hero |
-| Mot qui défile dans le titre (restaurant, boulangerie…) | Hero |
-| Console qui « génère » un spot en boucle | Hero |
+| Grille de points qui réagit au curseur et aux clics | Hero (à gauche) |
+| Mot qui défile dans le titre (restaurant, marque, hôtel…) | Hero |
+| Réseau neuronal : les nœuds s'écartent et s'allument sous le curseur, les signaux traversent les couches, un clic déclenche une salve | Hero (à droite) |
 | Titres qui montent mot par mot, filets qui se dessinent | Toutes les sections |
 | Halo qui suit le curseur, filet indigo, icônes qui se redessinent | Cartes et tarifs |
 | Compteurs à rouleaux | Chiffres et prix |
-| Colonne collante, étape active, panneau qui change | Méthode |
+| Bande sombre, colonne collante, étape active, panneau qui change | Méthode |
 | Défilement horizontal épinglé (ordinateur), glissé au doigt (mobile) | Exemples |
 | Lecture simulée des scripts au survol | Exemples |
 | Texte qui s'allume au fil du scroll, terminal qui s'écrit | Série |
-| Boutons aimantés, flèches qui avancent, pastille de menu qui glisse | Navigation et boutons |
+| Curseur simulé qui choisit une date, une heure et confirme l'appel | Contact |
+| Boutons aimantés, flèches qui avancent, pastille de menu qui glisse, barre qui passe en sombre au-dessus de la méthode | Navigation et boutons |
 
 Les visiteurs qui ont activé « réduire les animations » sur leur appareil voient le site complet, sans mouvement.

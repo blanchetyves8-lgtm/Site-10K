@@ -301,155 +301,384 @@
   if (heroCanvas) heroGrid(heroCanvas);
 
   /* ---------------------------------------------------------------------
-     6. Console de rendu du hero
+     6. Réseau neuronal du hero
+     Les nœuds proches du curseur s'écartent et s'activent, les signaux se
+     propagent couche par couche, un clic déclenche une salve.
      --------------------------------------------------------------------- */
-  function consoleDemo(el) {
-    const spots = [
-      {
-        file: 'spot_boulangerie_15s',
-        meta: '1080 × 1920 · 15 s',
-        prompt: 'Gros plan, croissant doré qui sort du four, vapeur, lumière chaude du matin',
-        shots: [
-          ['00:00', 'Sortie du four'],
-          ['00:04', 'Vapeur et dorure'],
-          ['00:08', 'Client en vitrine'],
-          ['00:12', 'Adresse et horaires'],
-        ],
-      },
-      {
-        file: 'spot_restaurant_20s',
-        meta: '1080 × 1920 · 20 s',
-        prompt: 'Flamme sous la poêle, cuisine ouverte, plan serré, ambiance de service du soir',
-        shots: [
-          ['00:00', 'Flamme en cuisine'],
-          ['00:05', 'Dressage vu du dessus'],
-          ['00:10', 'Salle pleine'],
-          ['00:15', 'Réservation'],
-        ],
-      },
-      {
-        file: 'spot_champagne_30s',
-        meta: '1920 × 1080 · 30 s',
-        prompt: 'Vue aérienne des vignes de la Côte des Bar au lever du soleil, brume légère',
-        shots: [
-          ['00:00', 'Vignes au lever du jour'],
-          ['00:08', 'Vendange à la main'],
-          ['00:16', 'Bulles au ralenti'],
-          ['00:24', 'Visite du domaine'],
-        ],
-      },
-    ];
+  function neuralNet(canvas) {
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    const stage = canvas.parentElement;
+    const hero = canvas.closest('.hero') || stage;
+    const STEP = 1000 / 60;
+    const RADIUS = 120;
+    const LINE_LEVELS = 8;
+    const NODE_LEVELS = 6;
+    const ink = [83, 58, 253];
+    const ramp = (from, k) => from.map((v, j) => Math.round(v + (ink[j] - v) * k));
+    const lineColors = Array.from({ length: LINE_LEVELS }, (_, i) => {
+      const k = i / (LINE_LEVELS - 1);
+      const c = ramp([214, 217, 252], Math.pow(k, 0.7));
+      return `rgba(${c[0]},${c[1]},${c[2]},${(0.7 + 0.3 * k).toFixed(2)})`;
+    });
+    const nodeFills = Array.from({ length: NODE_LEVELS }, (_, i) => {
+      const c = ramp([255, 255, 255], i / (NODE_LEVELS - 1));
+      return `rgb(${c[0]},${c[1]},${c[2]})`;
+    });
+    const nodeStrokes = Array.from({ length: NODE_LEVELS }, (_, i) => {
+      const c = ramp([185, 185, 249], i / (NODE_LEVELS - 1));
+      return `rgb(${c[0]},${c[1]},${c[2]})`;
+    });
+    const lineBuckets = Array.from({ length: LINE_LEVELS }, () => []);
+    const nodeBuckets = Array.from({ length: NODE_LEVELS }, () => []);
 
-    const fileEl = $('[data-c-file]', el);
-    const metaEl = $('[data-c-meta]', el);
-    const typedEl = $('[data-c-typed]', el);
-    const barEl = $('[data-c-bar]', el);
-    const pctEl = $('[data-c-pct]', el);
-    const statusEl = $('[data-c-status]', el);
-    const statusText = $('[data-c-status-text]', el);
-    const frames = $$('[data-c-frame]', el);
-    const shots = $$('[data-c-shot]', el);
-    const formats = $$('[data-c-format]', el);
-
-    const T_TYPE = 1700;
-    const T_GEN = 5200;
-    const T_HOLD = 3000;
-    const TOTAL = T_TYPE + T_GEN + T_HOLD;
-    let spot = 0;
-    let elapsed = -900; // laisse la console apparaître avant de taper
-    let last = 0;
+    let w = 0;
+    let h = 0;
+    let nodes = [];
+    let links = [];
+    let inputs = [];
+    let pulses = [];
+    const rings = [];
     let raf = 0;
     let running = false;
-    let cache = {};
+    let visible = false;
+    let booted = false;
+    let last = 0;
+    let acc = 0;
+    let clock = 0;
+    let idle = 600;
+    const pointer = { x: -1e4, y: -1e4, s: 0, ts: 0, moving: 0 };
+    const tilt = { x: 0, y: 0, tx: 0, ty: 0 };
 
-    const set = (key, value, apply) => {
-      if (cache[key] === value) return;
-      cache[key] = value;
-      apply(value);
-    };
-
-    function load(i) {
-      const s = spots[i];
-      fileEl.textContent = s.file;
-      metaEl.textContent = s.meta;
-      shots.forEach((li, k) => {
-        $('.tc', li).textContent = s.shots[k][0];
-        $('.shot-name', li).textContent = s.shots[k][1];
-      });
-      frames.forEach((f, k) => {
-        $('.frame-tc', f).textContent = s.shots[k][0];
-      });
-      cache = {};
+    // Tirage à graine fixe : le réseau garde la même forme à chaque redimensionnement.
+    function seeded(seed) {
+      return () => {
+        seed = (seed + 0x6d2b79f5) | 0;
+        let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+        t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+        return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+      };
     }
 
-    function render(t) {
-      const s = spots[spot];
-      const chars = Math.round(clamp(t / T_TYPE, 0, 1) * s.prompt.length);
-      set('chars', chars, (n) => (typedEl.textContent = s.prompt.slice(0, n)));
-
-      const p = clamp((t - T_TYPE) / T_GEN, 0, 1);
-      barEl.style.transform = `scaleX(${p.toFixed(4)})`;
-      set('pct', Math.round(p * 100), (n) => (pctEl.textContent = `${n} %`));
-
-      frames.forEach((f, k) => {
-        const local = clamp(p * frames.length - k, 0, 1);
-        f.style.setProperty('--fill', local.toFixed(3));
-        const state = local >= 1 ? 2 : local > 0 ? 1 : 0;
-        set(`f${k}`, state, (st) => {
-          f.classList.toggle('is-rendering', st === 1);
-          f.classList.toggle('is-done', st === 2);
-          shots[k].classList.toggle('is-active', st === 1);
-          shots[k].classList.toggle('is-done', st === 2);
+    function build() {
+      const rand = seeded(7);
+      const layers = w < 520 ? [4, 7, 10, 12, 10, 7, 4] : [5, 9, 13, 16, 13, 9, 5];
+      const maxCount = Math.max(...layers);
+      const padX = Math.max(14, w * 0.05);
+      const padY = Math.max(14, h * 0.07);
+      nodes = [];
+      links = [];
+      pulses = [];
+      const byLayer = layers.map((count, li) => {
+        const x = padX + ((w - 2 * padX) * li) / (layers.length - 1);
+        const span = (h - 2 * padY) * (0.3 + 0.7 * (count / maxCount));
+        return Array.from({ length: count }, (_, k) => {
+          const y = h / 2 - span / 2 + (count > 1 ? (span * k) / (count - 1) : span / 2);
+          const bx = x + (rand() - 0.5) * Math.min(16, w * 0.025);
+          const by = y + (rand() - 0.5) * 6;
+          const node = {
+            bx,
+            by,
+            x: bx,
+            y: by,
+            vx: 0,
+            vy: 0,
+            a: 0,
+            flash: 0,
+            cool: 0,
+            z: 0.35 + rand() * 0.65,
+            phase: rand() * Math.PI * 2,
+            out: [],
+          };
+          nodes.push(node);
+          return node;
         });
       });
+      for (let li = 0; li < byLayer.length - 1; li++) {
+        const next = byLayer[li + 1];
+        byLayer[li].forEach((from) => {
+          next.forEach((to) => {
+            if (rand() >= 0.6) return;
+            const link = { from, to, wgt: 0.35 + rand() * 0.65, heat: 0 };
+            links.push(link);
+            from.out.push(link);
+          });
+          if (!from.out.length) {
+            const link = { from, to: next[Math.floor(rand() * next.length)], wgt: 0.7, heat: 0 };
+            links.push(link);
+            from.out.push(link);
+          }
+        });
+      }
+      inputs = byLayer[0];
+    }
 
-      const phase = t < T_TYPE ? 0 : p < 1 ? 1 : 2;
-      set('phase', phase, (ph) => {
-        statusEl.classList.toggle('is-ready', ph === 2);
-        statusText.textContent = ['Écriture', 'Génération', 'Prêt'][ph];
-      });
+    function fire(node) {
+      node.cool = 420;
+      node.flash = 1;
+      node.a *= 0.5;
+      const pool = node.out.slice();
+      const count = Math.min(pool.length, 2 + Math.floor(Math.random() * 3));
+      for (let i = 0; i < count; i++) {
+        // Tirage pondéré : les connexions fortes portent plus souvent le signal.
+        let total = 0;
+        pool.forEach((l) => (total += l.wgt));
+        let r = Math.random() * total;
+        let idx = 0;
+        while (idx < pool.length - 1 && (r -= pool[idx].wgt) > 0) idx++;
+        const link = pool.splice(idx, 1)[0];
+        link.heat = Math.max(link.heat, 0.45);
+        pulses.push({ link, t: 0, speed: STEP / (300 + (1 - link.wgt) * 360) });
+      }
+      if (pulses.length > 320) pulses.splice(0, pulses.length - 320);
+    }
 
-      formats.forEach((fm, k) => {
-        set(`fm${k}`, t > T_TYPE + T_GEN + 250 + k * 220, (on) => fm.classList.toggle('is-on', on));
+    function burst(x, y) {
+      rings.push({ x, y, age: 0 });
+      if (rings.length > 4) rings.shift();
+      nodes.forEach((n) => {
+        const dx = n.x - x;
+        const dy = n.y - y;
+        const d = Math.sqrt(dx * dx + dy * dy) || 1;
+        if (d > 150) return;
+        n.a = 1;
+        n.cool = 0;
+        n.vx += (dx / d) * 7 * (1 - d / 150);
+        n.vy += (dy / d) * 7 * (1 - d / 150);
       });
     }
 
-    function tick(now) {
-      const dt = last ? Math.min(now - last, 64) : 16;
-      last = now;
-      elapsed += dt;
-      if (elapsed > TOTAL) {
-        elapsed = 0;
-        spot = (spot + 1) % spots.length;
-        load(spot);
+    function step() {
+      clock += STEP;
+      pointer.s += (pointer.ts - pointer.s) * 0.1;
+      tilt.x += (tilt.tx - tilt.x) * 0.05;
+      tilt.y += (tilt.ty - tilt.y) * 0.05;
+      if (pointer.moving > 0) pointer.moving -= STEP;
+      const excite = pointer.moving > 0 ? 0.08 : 0.025;
+
+      for (const n of nodes) {
+        let tx = n.bx + Math.sin(clock * 0.0007 + n.phase) * 2.5 * n.z + tilt.x * 18 * n.z;
+        let ty = n.by + Math.cos(clock * 0.0006 + n.phase * 1.7) * 3 * n.z + tilt.y * 12 * n.z;
+        if (pointer.s > 0.01) {
+          const dx = n.x - pointer.x;
+          const dy = n.y - pointer.y;
+          const d = Math.sqrt(dx * dx + dy * dy) || 1;
+          if (d < RADIUS) {
+            const f = 1 - d / RADIUS;
+            tx += (dx / d) * f * f * 32 * pointer.s;
+            ty += (dy / d) * f * f * 32 * pointer.s;
+            n.a = Math.min(1, n.a + f * excite * pointer.s);
+          }
+        }
+        n.vx = (n.vx + (tx - n.x) * 0.075) * 0.8;
+        n.vy = (n.vy + (ty - n.y) * 0.075) * 0.8;
+        n.x += n.vx;
+        n.y += n.vy;
+        n.a *= 0.968;
+        n.flash *= 0.9;
+        if (n.cool > 0) n.cool -= STEP;
+        else if (n.a > 0.6) fire(n);
       }
-      render(elapsed);
-      raf = requestAnimationFrame(tick);
+
+      for (let i = pulses.length - 1; i >= 0; i--) {
+        const p = pulses[i];
+        p.t += p.speed;
+        if (p.t < 1) continue;
+        p.link.to.a = Math.min(1, p.link.to.a + p.link.wgt * 0.7);
+        p.link.heat = 1;
+        pulses.splice(i, 1);
+      }
+      for (const l of links) l.heat *= 0.95;
+      for (let i = rings.length - 1; i >= 0; i--) {
+        rings[i].age += STEP;
+        if (rings[i].age > 900) rings.splice(i, 1);
+      }
+
+      // Même sans souris, la couche d'entrée reçoit des signaux.
+      idle -= STEP;
+      if (idle <= 0) {
+        const n = inputs[Math.floor(Math.random() * inputs.length)];
+        n.a = 1;
+        n.cool = 0;
+        idle = 420 + Math.random() * 640;
+      }
+    }
+
+    function draw() {
+      ctx.clearRect(0, 0, w, h);
+
+      lineBuckets.forEach((b) => (b.length = 0));
+      const lens = pointer.s > 0.01;
+      for (const l of links) {
+        let v = 0.04 + l.wgt * 0.1 + l.heat * 0.75 + (l.from.a + l.to.a) * 0.2;
+        if (lens) {
+          // Les connexions sous le curseur s'allument.
+          const mx = (l.from.x + l.to.x) / 2 - pointer.x;
+          const my = (l.from.y + l.to.y) / 2 - pointer.y;
+          const near = 1 - Math.sqrt(mx * mx + my * my) / (RADIUS * 1.1);
+          if (near > 0) v += near * 0.45 * pointer.s;
+        }
+        lineBuckets[Math.floor(Math.min(0.999, v) * LINE_LEVELS)].push(l.from.x, l.from.y, l.to.x, l.to.y);
+      }
+      for (let i = 0; i < LINE_LEVELS; i++) {
+        const b = lineBuckets[i];
+        if (!b.length) continue;
+        ctx.strokeStyle = lineColors[i];
+        ctx.lineWidth = i >= LINE_LEVELS - 2 ? 1.4 : 1;
+        ctx.beginPath();
+        for (let j = 0; j < b.length; j += 4) {
+          ctx.moveTo(b[j], b[j + 1]);
+          ctx.lineTo(b[j + 2], b[j + 3]);
+        }
+        ctx.stroke();
+      }
+
+      if (pulses.length) {
+        ctx.strokeStyle = 'rgba(83, 58, 253, 0.85)';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        for (const p of pulses) {
+          const { from, to } = p.link;
+          const t0 = Math.max(0, p.t - 0.16);
+          ctx.moveTo(from.x + (to.x - from.x) * t0, from.y + (to.y - from.y) * t0);
+          ctx.lineTo(from.x + (to.x - from.x) * p.t, from.y + (to.y - from.y) * p.t);
+        }
+        ctx.stroke();
+        ctx.fillStyle = '#533afd';
+        for (const p of pulses) {
+          const { from, to } = p.link;
+          ctx.fillRect(from.x + (to.x - from.x) * p.t - 1.5, from.y + (to.y - from.y) * p.t - 1.5, 3, 3);
+        }
+      }
+
+      if (lens) {
+        ctx.strokeStyle = `rgba(185, 185, 249, ${(0.7 * pointer.s).toFixed(3)})`;
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.arc(pointer.x, pointer.y, RADIUS, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+
+      for (const r of rings) {
+        const k = r.age / 900;
+        ctx.strokeStyle = `rgba(83, 58, 253, ${(0.6 * (1 - k)).toFixed(3)})`;
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.arc(r.x, r.y, 12 + k * 150, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+
+      nodeBuckets.forEach((b) => (b.length = 0));
+      for (const n of nodes) nodeBuckets[Math.min(NODE_LEVELS - 1, Math.floor(n.a * NODE_LEVELS))].push(n);
+      ctx.lineWidth = 1;
+      for (let i = 0; i < NODE_LEVELS; i++) {
+        const b = nodeBuckets[i];
+        if (!b.length) continue;
+        ctx.fillStyle = nodeFills[i];
+        ctx.strokeStyle = nodeStrokes[i];
+        ctx.beginPath();
+        for (const n of b) {
+          const size = Math.round(5 + n.a * 4 + n.flash * 3);
+          ctx.rect(Math.round(n.x - size / 2) + 0.5, Math.round(n.y - size / 2) + 0.5, size, size);
+        }
+        ctx.fill();
+        ctx.stroke();
+      }
+    }
+
+    // Image fixe pour le mouvement réduit : un chemin allumé de l'entrée à la sortie.
+    function paintStill() {
+      let node = inputs[Math.floor(inputs.length / 2)];
+      while (node) {
+        node.a = 0.9;
+        const link = node.out.reduce((best, l) => (!best || l.wgt > best.wgt ? l : best), null);
+        if (!link) break;
+        link.heat = 1;
+        node = link.to;
+      }
+      draw();
+    }
+
+    function resize() {
+      const rect = stage.getBoundingClientRect();
+      if (!rect.width || !rect.height) return;
+      const dpr = Math.min(window.devicePixelRatio || 1, 2);
+      w = rect.width;
+      h = rect.height;
+      canvas.width = Math.round(w * dpr);
+      canvas.height = Math.round(h * dpr);
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      build();
+      if (reduceMotion) paintStill();
+      else draw();
+    }
+
+    function frame(now) {
+      const dt = last ? Math.min(now - last, 100) : STEP;
+      last = now;
+      acc += dt;
+      let steps = 0;
+      while (acc >= STEP && steps < 6) {
+        step();
+        acc -= STEP;
+        steps++;
+      }
+      if (steps === 6) acc = 0;
+      draw();
+      raf = requestAnimationFrame(frame);
     }
     function start() {
-      if (running || document.hidden) return;
+      if (running || reduceMotion || !visible || document.hidden) return;
       running = true;
       last = 0;
-      raf = requestAnimationFrame(tick);
+      raf = requestAnimationFrame(frame);
+      if (!booted) {
+        booted = true;
+        // Première vague : toute la couche d'entrée s'allume.
+        window.setTimeout(() => inputs.forEach((n) => ((n.a = 1), (n.cool = 0))), 500);
+      }
     }
     function stop() {
       running = false;
       cancelAnimationFrame(raf);
     }
 
-    if (reduceMotion) return; // état final statique, déjà dans le HTML
-    load(0);
-    render(0);
-    let visible = false;
-    watch(el, (isVisible) => {
+    if ('ResizeObserver' in window) new ResizeObserver(resize).observe(stage);
+    else window.addEventListener('resize', resize);
+    resize();
+
+    watch(stage, (isVisible) => {
       visible = isVisible;
       if (isVisible) start();
       else stop();
-    }, { threshold: 0.15 });
-    document.addEventListener('visibilitychange', () => (document.hidden ? stop() : visible && start()));
+    });
+    document.addEventListener('visibilitychange', () => (document.hidden ? stop() : start()));
+
+    if (reduceMotion) return;
+    hero.addEventListener('pointermove', (e) => {
+      if (e.pointerType === 'touch') return;
+      const hr = hero.getBoundingClientRect();
+      tilt.tx = clamp(((e.clientX - hr.left) / hr.width - 0.5) * 2, -1, 1);
+      tilt.ty = clamp(((e.clientY - hr.top) / hr.height - 0.5) * 2, -1, 1);
+      const cr = canvas.getBoundingClientRect();
+      pointer.x = e.clientX - cr.left;
+      pointer.y = e.clientY - cr.top;
+      const inside = pointer.x > -40 && pointer.y > -40 && pointer.x < cr.width + 40 && pointer.y < cr.height + 40;
+      pointer.ts = inside ? 1 : 0;
+      pointer.moving = 160;
+    });
+    hero.addEventListener('pointerleave', () => {
+      pointer.ts = 0;
+      tilt.tx = 0;
+      tilt.ty = 0;
+    });
+    stage.addEventListener('pointerdown', (e) => {
+      const cr = canvas.getBoundingClientRect();
+      burst(e.clientX - cr.left, e.clientY - cr.top);
+    });
   }
-  const consoleEl = $('[data-console]');
-  if (consoleEl) consoleDemo(consoleEl);
+  const netCanvas = $('[data-net]');
+  if (netCanvas) neuralNet(netCanvas);
 
   /* ---------------------------------------------------------------------
      7. Cartes de scripts : lecture simulée au survol (ou à l'écran sur mobile)
@@ -527,7 +756,198 @@
   $$('[data-story]').forEach(storyCard);
 
   /* ---------------------------------------------------------------------
-     8. Section exemples : scroll horizontal épinglé (desktop)
+     8. Calendrier du contact : un curseur choisit une date, une heure, confirme
+     --------------------------------------------------------------------- */
+  function calendarDemo(card) {
+    const daysEl = $('[data-cal-days]', card);
+    const monthEl = $('[data-cal-month]', card);
+    const labelEl = $('[data-cal-label]', card);
+    const slotsBox = $('.cal-slots', card);
+    const slots = $$('.cal-slot', card);
+    const summaryEl = $('[data-cal-summary]', card);
+    const confirmEl = $('[data-cal-confirm]', card);
+    const confirmText = $('[data-cal-confirm-text]', card);
+    const cursor = $('[data-cal-cursor]', card);
+    const ring = $('[data-cal-ring]', card);
+    const TIP_X = 3.7; // pointe de la flèche dans le SVG de 22px
+    const TIP_Y = 1.8;
+    const capitalize = (text) => text.charAt(0).toUpperCase() + text.slice(1);
+    const dayFormat = new Intl.DateTimeFormat('fr-FR', { weekday: 'long', day: 'numeric', month: 'long' });
+    const shortFormat = new Intl.DateTimeFormat('fr-FR', { weekday: 'short', day: 'numeric', month: 'short' });
+
+    // Mois affiché : le mois en cours, ou le suivant s'il reste trop peu de jours ouvrés.
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const openDays = (first) => {
+      const list = [];
+      const total = new Date(first.getFullYear(), first.getMonth() + 1, 0).getDate();
+      for (let d = 1; d <= total; d++) {
+        const date = new Date(first.getFullYear(), first.getMonth(), d);
+        const weekday = date.getDay();
+        if (date > today && weekday !== 0 && weekday !== 6) list.push(d);
+      }
+      return list;
+    };
+    let view = new Date(today.getFullYear(), today.getMonth(), 1);
+    if (openDays(view).length < 6) view = new Date(view.getFullYear(), view.getMonth() + 1, 1);
+    const open = openDays(view);
+    const dateOf = (d) => new Date(view.getFullYear(), view.getMonth(), d);
+    monthEl.textContent = capitalize(new Intl.DateTimeFormat('fr-FR', { month: 'long', year: 'numeric' }).format(view));
+
+    const cells = {};
+    const offset = (view.getDay() + 6) % 7; // semaine commençant le lundi
+    const total = new Date(view.getFullYear(), view.getMonth() + 1, 0).getDate();
+    daysEl.textContent = '';
+    for (let i = 0; i < offset; i++) {
+      const blank = document.createElement('span');
+      blank.className = 'cal-day is-blank';
+      daysEl.appendChild(blank);
+    }
+    for (let d = 1; d <= total; d++) {
+      const cell = document.createElement('span');
+      cell.className = 'cal-day';
+      cell.textContent = String(d);
+      if (dateOf(d).getTime() === today.getTime()) cell.classList.add('is-today');
+      if (open.includes(d)) cell.classList.add('is-open');
+      daysEl.appendChild(cell);
+      cells[d] = cell;
+    }
+    slots.forEach((slot, k) => slot.style.setProperty('--k', k));
+
+    let timers = [];
+    let round = 0;
+    let running = false;
+    let cardVisible = false;
+    const later = (ms, fn) => timers.push(window.setTimeout(fn, ms));
+    const clearTimers = () => {
+      timers.forEach((t) => window.clearTimeout(t));
+      timers = [];
+    };
+
+    // Coordonnées d'un élément dans la carte (sous la bordure).
+    function point(el, fx = 0.55, fy = 0.6) {
+      const r = el.getBoundingClientRect();
+      const c = card.getBoundingClientRect();
+      return {
+        x: r.left - c.left - card.clientLeft + r.width * fx,
+        y: r.top - c.top - card.clientTop + r.height * fy,
+      };
+    }
+    function moveTo(p, instant = false) {
+      cursor.classList.toggle('is-instant', instant);
+      cursor.style.setProperty('--cx', `${(p.x - TIP_X).toFixed(1)}px`);
+      cursor.style.setProperty('--cy', `${(p.y - TIP_Y).toFixed(1)}px`);
+      if (instant) void cursor.getBoundingClientRect();
+    }
+    function click(p) {
+      cursor.classList.add('is-press');
+      later(150, () => cursor.classList.remove('is-press'));
+      ring.style.setProperty('--rx', `${p.x.toFixed(1)}px`);
+      ring.style.setProperty('--ry', `${p.y.toFixed(1)}px`);
+      ring.classList.remove('is-on');
+      void ring.offsetWidth;
+      ring.classList.add('is-on');
+    }
+    const rest = () => ({ x: card.clientWidth * 0.5, y: card.clientHeight - 22 });
+
+    function reset() {
+      Object.values(cells).forEach((c) => c.classList.remove('is-selected', 'is-hover'));
+      slots.forEach((slot) => slot.classList.remove('is-selected', 'is-hover', 'is-taken'));
+      slotsBox.classList.remove('is-on');
+      labelEl.textContent = 'Choisissez une date';
+      labelEl.classList.remove('is-set');
+      summaryEl.textContent = 'Aucun créneau choisi';
+      summaryEl.classList.remove('is-set');
+      confirmEl.classList.remove('is-ready', 'is-hover', 'is-done', 'is-press');
+      confirmText.textContent = 'Confirmer';
+    }
+
+    function pickDate(day, takenIndex) {
+      cells[day].classList.remove('is-hover');
+      cells[day].classList.add('is-selected');
+      labelEl.textContent = capitalize(dayFormat.format(dateOf(day)));
+      labelEl.classList.add('is-set');
+      slots[takenIndex].classList.add('is-taken');
+      slotsBox.classList.add('is-on');
+    }
+    function pickSlot(day, slot) {
+      slot.classList.remove('is-hover');
+      slot.classList.add('is-selected');
+      summaryEl.textContent = `${shortFormat.format(dateOf(day))} · ${slot.textContent}`;
+      summaryEl.classList.add('is-set');
+      confirmEl.classList.add('is-ready');
+    }
+    function confirm() {
+      confirmEl.classList.remove('is-hover', 'is-ready');
+      confirmEl.classList.add('is-done');
+      confirmText.textContent = 'Appel réservé';
+    }
+
+    function play() {
+      clearTimers();
+      reset();
+      const day = open[(2 + round * 3) % open.length];
+      const slot = slots[[1, 3, 0, 4, 2][round % 5]];
+      const takenIndex = [2, 0, 4, 1, 5][round % 5];
+      round++;
+      const cell = cells[day];
+
+      later(400, () => moveTo(point(cell)));
+      later(1350, () => cell.classList.add('is-hover'));
+      later(1550, () => {
+        click(point(cell));
+        pickDate(day, takenIndex);
+      });
+      later(2300, () => moveTo(point(slot)));
+      later(3250, () => slot.classList.add('is-hover'));
+      later(3450, () => {
+        click(point(slot));
+        pickSlot(day, slot);
+      });
+      later(4200, () => moveTo(point(confirmEl, 0.5, 0.55)));
+      later(5150, () => confirmEl.classList.add('is-hover'));
+      later(5350, () => {
+        click(point(confirmEl, 0.5, 0.55));
+        confirmEl.classList.add('is-press');
+        later(160, () => confirmEl.classList.remove('is-press'));
+        confirm();
+      });
+      later(6300, () => moveTo(rest()));
+      later(8600, play);
+    }
+
+    function start() {
+      if (running || document.hidden || !cardVisible) return;
+      running = true;
+      moveTo(rest(), true);
+      play();
+    }
+    function stop() {
+      running = false;
+      clearTimers();
+    }
+
+    if (reduceMotion) {
+      // État final immobile : date, heure et confirmation déjà choisies.
+      const day = open[Math.min(2, open.length - 1)];
+      pickDate(day, 2);
+      pickSlot(day, slots[1]);
+      confirm();
+      moveTo(point(confirmEl, 0.5, 0.55), true);
+      return;
+    }
+    watch(card, (isVisible) => {
+      cardVisible = isVisible;
+      if (isVisible) start();
+      else stop();
+    }, { threshold: 0.3 });
+    document.addEventListener('visibilitychange', () => (document.hidden ? stop() : start()));
+  }
+  const calendar = $('[data-cal]');
+  if (calendar) calendarDemo(calendar);
+
+  /* ---------------------------------------------------------------------
+     9. Section exemples : scroll horizontal épinglé (desktop)
      --------------------------------------------------------------------- */
   const hscroll = (() => {
     const section = $('[data-hscroll]');
@@ -587,7 +1007,7 @@
   })();
 
   /* ---------------------------------------------------------------------
-     9. Méthode : étape active, rail de progression, panneau visuel
+     10. Méthode : étape active, rail de progression, panneau visuel
      --------------------------------------------------------------------- */
   const method = (() => {
     const wrap = $('[data-steps]');
@@ -622,7 +1042,7 @@
   })();
 
   /* ---------------------------------------------------------------------
-     10. Série : texte qui s'allume au scroll, panneau qui s'ouvre, terminal
+     11. Série : texte qui s'allume au scroll, panneau qui s'ouvre, terminal
      --------------------------------------------------------------------- */
   const scrub = (() => {
     const el = $('[data-scrub]');
@@ -676,13 +1096,14 @@
   }
 
   /* ---------------------------------------------------------------------
-     11. Boucle de scroll unique
+     12. Boucle de scroll unique
      --------------------------------------------------------------------- */
   const nav = $('[data-nav]');
   const progressEl = $('[data-progress]');
+  const darkBands = $$('.section--dark');
   const heroCopy = $('[data-hero-copy]');
   const heroVisual = $('[data-hero-visual]');
-  // Parallaxe seulement quand texte et console sont côte à côte : empilés, ils se chevaucheraient.
+  // Parallaxe seulement quand texte et réseau sont côte à côte : empilés, ils se chevaucheraient.
   const sideBySide = window.matchMedia('(min-width: 1040px)');
   sideBySide.addEventListener('change', () => {
     heroCopy.style.transform = '';
@@ -698,6 +1119,12 @@
     const y = window.scrollY;
     const vh = window.innerHeight;
     const max = document.documentElement.scrollHeight - vh;
+    const navLine = nav.offsetHeight / 2;
+    const overDark = darkBands.some((band) => {
+      const r = band.getBoundingClientRect();
+      return r.top <= navLine && r.bottom >= navLine;
+    });
+    nav.classList.toggle('is-dark', overDark);
     progressEl.style.transform = `scaleX(${max > 0 ? (y / max).toFixed(4) : 0})`;
 
     nav.classList.toggle('is-scrolled', y > 8);
@@ -746,7 +1173,7 @@
   update();
 
   /* ---------------------------------------------------------------------
-     12. Survols : halo qui suit le curseur, boutons aimantés
+     13. Survols : halo qui suit le curseur, boutons aimantés
      --------------------------------------------------------------------- */
   if (finePointer) {
     $$('[data-spot]').forEach((el) => {
@@ -783,7 +1210,7 @@
   }
 
   /* ---------------------------------------------------------------------
-     13. Navigation : pastille glissante, lien actif, menu mobile
+     14. Navigation : pastille glissante, lien actif, menu mobile
      --------------------------------------------------------------------- */
   const navLinks = $('[data-nav-links]');
   const pill = $('[data-nav-pill]');
@@ -852,7 +1279,7 @@
   }
 
   /* ---------------------------------------------------------------------
-     14. FAQ en accordéon
+     15. FAQ en accordéon
      --------------------------------------------------------------------- */
   $$('.faq-q').forEach((button) => {
     button.addEventListener('click', () => {
@@ -863,7 +1290,7 @@
   });
 
   /* ---------------------------------------------------------------------
-     15. Formulaire de contact
+     16. Formulaire de contact
      Sans service d'envoi branché (data-endpoint vide), le visiteur récupère
      son message prêt à copier, avec l'adresse email. On n'affiche jamais
      « envoyé » sans confirmation réelle du serveur.
@@ -874,14 +1301,13 @@
     const email = form.dataset.email || '';
     const endpoint = (form.dataset.endpoint || '').trim();
 
-    const composeMessage = (data) =>
-      [
-        `Nom : ${data.get('nom')}`,
-        `Email : ${data.get('email')}`,
-        `Activité : ${data.get('activite')}`,
-        '',
-        data.get('message'),
-      ].join('\n');
+    const composeMessage = (data) => {
+      const lines = [`Nom : ${data.get('nom')}`, `Email : ${data.get('email')}`];
+      if (data.get('entreprise')) lines.push(`Entreprise : ${data.get('entreprise')}`);
+      if (data.get('pays')) lines.push(`Pays : ${data.get('pays')}`);
+      lines.push(`Activité : ${data.get('activite')}`, '', data.get('message'));
+      return lines.join('\n');
+    };
 
     function showSent() {
       statusBox.innerHTML = '';
